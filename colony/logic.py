@@ -243,6 +243,30 @@ def cage_census(mice: pd.DataFrame, capacity: int) -> pd.DataFrame:
     return counts.sort_values("Cage").reset_index(drop=True)
 
 
+def cage_list(tables: Tables, capacity: int) -> pd.DataFrame:
+    """Each occupied cage: who's in it, whether it holds a breeding pair, and whether it's full."""
+    mice = tables["mice"]
+    housed = mice[(~mice["status"].isin(ALIVE_EXCLUDED)) & (mice["cage"] != "")]
+    pairs = tables["pairs"]
+    active = pairs[pairs["status"] == "Active"]
+    pair_by_cage = dict(zip(active["cage"], active["pair_id"]))
+    rows = []
+    for cage, group in housed.groupby("cage"):
+        count = len(group)
+        rows.append(
+            {
+                "Cage": cage,
+                "Mice": count,
+                "F": int((group["sex"] == "F").sum()),
+                "M": int((group["sex"] == "M").sum()),
+                "Pair": pair_by_cage.get(cage, ""),
+                "Flag": "Over capacity" if count > capacity else "",
+            }
+        )
+    frame = pd.DataFrame(rows, columns=["Cage", "Mice", "F", "M", "Pair", "Flag"])
+    return frame.sort_values("Cage", key=lambda s: s.str.len() * 1000).reset_index(drop=True) if len(frame) else frame
+
+
 def tumor_table(tables: Tables) -> pd.DataFrame:
     """Tumor records, newest first, with genotype and age filled in when the mouse is known."""
     # The answers people look for come first, so they show on a phone without scrolling sideways.

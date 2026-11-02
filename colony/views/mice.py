@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from .. import logic, ops, ui
-from ..schema import CRE_VALUES, FLOX_VALUES, MOUSE_STATUSES
+from ..schema import CRE_VALUES, FLOX_VALUES, MOUSE_STATUSES, SEXES, today
 from ..store import Tables
 
 
@@ -37,6 +37,13 @@ def _find(ctx: ui.Context, tables: Tables) -> None:
             brca2 = st.multiselect("Brca2", FLOX_VALUES)
         first, second, third = st.columns(3)
         with first:
+            sexes = st.multiselect("Sex", SEXES)
+        with second:
+            min_weeks = st.number_input("Age at least (weeks)", min_value=0, max_value=500, value=0, step=1)
+        with third:
+            max_weeks = st.number_input("Age at most (weeks)", min_value=0, max_value=500, value=500, step=1)
+        first, second, third = st.columns(3)
+        with first:
             statuses = st.multiselect(
                 "Status", MOUSE_STATUSES, default=[s for s in MOUSE_STATUSES if s != "Deceased"]
             )
@@ -48,8 +55,11 @@ def _find(ctx: ui.Context, tables: Tables) -> None:
     found = _filter(
         mice,
         query,
-        {"cre": cre, "p53": p53, "brca2": brca2, "status": statuses, "cohort": cohorts, "cage": cages},
+        {"cre": cre, "p53": p53, "brca2": brca2, "sex": sexes, "status": statuses, "cohort": cohorts, "cage": cages},
     )
+    current = today()
+    weeks = found["dob"].map(lambda dob: (logic.age_days(dob, current) or 0) // 7)
+    found = found[(weeks >= min_weeks) & (weeks <= max_weeks)]
     st.caption(f"{len(found)} of {len(mice)} mice")
     ui.table(ui.mice_table(found))
 
@@ -103,6 +113,16 @@ def _detail(ctx: ui.Context, tables: Tables, tag: str) -> None:
             st.text(f"{row['litter_id']}, pair {row['pair_id']}, born {row['dob']}, {mates} littermates recorded")
     else:
         st.caption("Not linked to a litter.")
+
+    moves = tables["moves"]
+    history = moves[moves["ear_tag"] == tag]
+    if len(history):
+        st.markdown("**Cage moves**")
+        ui.table(
+            history.sort_values("moved_on", ascending=False)[["moved_on", "from_cage", "to_cage"]].rename(
+                columns={"moved_on": "Date", "from_cage": "From", "to_cage": "To"}
+            )
+        )
 
     st.markdown("**Pedigree**")
     st.graphviz_chart(logic.pedigree_dot(mice, tag, 2), width="stretch")

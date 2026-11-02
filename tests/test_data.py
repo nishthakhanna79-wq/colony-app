@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from colony import logic, ops
+from colony import cards, imports, logic, ops
 from colony.backends import GitHubBackend, LocalBackend, StoreError
 from colony.ops import ValidationError
 from colony.store import Store, parse_table
@@ -504,3 +504,209 @@ def test_deleting_a_tumor_record_leaves_the_mouse_alone(store):
     store.transaction("d", lambda tx: ops.delete_tumor(tx, "A1"))
     tables = store.snapshot()
     assert tables["tumors"].empty and list(tables["mice"]["ear_tag"]) == ["A1"]
+
+
+# ---------- Cage moves and cage list ----------
+
+
+def test_moving_mice_records_each_move(store):
+    add(store, "A1", cage="C1")
+    add(store, "A2", cage="C1")
+    moved = store.transaction("m", lambda tx: ops.move_mice(tx, ["A1", "A2"], "C2", today(), ACTOR))
+    assert moved == 2
+    tables = store.snapshot()
+    assert set(tables["mice"]["cage"]) == {"C2"}
+    assert list(tables["moves"]["from_cage"]) == ["C1", "C1"] and list(tables["moves"]["to_cage"]) == ["C2", "C2"]
+
+
+def test_moving_to_the_same_cage_records_nothing(store):
+    add(store, "A1", cage="C1")
+    assert store.transaction("m", lambda tx: ops.move_mice(tx, ["A1"], "C1", today(), ACTOR)) == 0
+    assert store.snapshot()["moves"].empty
+
+
+@pytest.mark.parametrize("tags,cage,message", [([], "C2", "at least one"), (["A1"], "", "cage to move")])
+def test_move_needs_mice_and_a_cage(store, tags, cage, message):
+    add(store, "A1", cage="C1")
+    with pytest.raises(ValidationError, match=message):
+        store.transaction("m", lambda tx: ops.move_mice(tx, tags, cage, today(), ACTOR))
+
+
+def test_editing_the_cage_and_pairing_also_record_moves(store):
+    add(store, "F1", sex="F", days=200, cage="C1")
+    add(store, "M1", sex="M", days=200, cage="C2")
+    store.transaction("e", lambda tx: ops.update_mouse(tx, "F1", {"cage": "C3"}, ACTOR))
+    store.transaction("p", lambda tx: ops.add_pair(tx, "M1", "F1", "C9", old(1), "", ACTOR))
+    moves = store.snapshot()["moves"]
+    assert list(zip(moves["ear_tag"], moves["to_cage"])) == [("F1", "C3"), ("M1", "C9"), ("F1", "C9")]
+    assert list(moves["moved_on"])[1] == old(1)
+
+
+def test_moves_follow_a_rename_and_go_with_a_deleted_mistake(store):
+    add(store, "A1", cage="C1")
+    store.transaction("m", lambda tx: ops.move_mice(tx, ["A1"], "C2", today(), ACTOR))
+    store.transaction("r", lambda tx: ops.update_mouse(tx, "A1", {"ear_tag": "A2"}, ACTOR))
+    assert list(store.snapshot()["moves"]["ear_tag"]) == ["A2"]
+    store.transaction("d", lambda tx: ops.delete_mouse(tx, "A2"))
+    assert store.snapshot()["moves"].empty
+
+
+def test_cage_list_counts_living_mice_and_shows_the_pair(store):
+    colony_with_litter(store)
+    add(store, "X1", sex="F", cage="C7")
+    add(store, "X2", sex="F", cage="C7", status="Deceased")
+    listing = logic.cage_list(store.snapshot(), capacity=2).set_index("Cage")
+    row = listing.loc["C7"]
+    assert (row["Mice"], row["F"], row["M"], row["Pair"], row["Flag"]) == (3, 2, 1, "P001", "Over capacity")
+
+
+# ---------- Spreadsheet import ----------
+
+
+def sheet(*rows, columns=("Ear Tag", "Sex", "DOB", "Genotype", "Cage", "Dam", "Sire")):
+    return pd.DataFrame([list(r) for r in rows], columns=list(columns), dtype=str)
+
+
+ORDER = imports.GENOTYPE_ORDERS["Cre / p53 / Brca2"]
+
+
+def run_import(store, frame, order=ORDER):
+    mapping = imports.guess_columns(list(frame.columns))
+    box = {}
+
+    def change(tx):
+        box["result"] = imports.import_mice(tx, frame, mapping, order, ACTOR)
+
+    store.transaction("import", change)
+    return box["result"]
+
+
+def test_columns_are_guessed_from_common_names():
+    guess = imports.guess_columns(["Ear Tag", "Gender", "Date of Birth", "Genotype", "Cage #", "Dam", "Sire", "Comments"])
+    assert guess["ear_tag"] == "Ear Tag" and guess["sex"] == "Gender" and guess["dob"] == "Date of Birth"
+    assert guess["mother"] == "Dam" and guess["father"] == "Sire" and guess["notes"] == "Comments" and guess["cage"] == "Cage #"
+    assert guess["cre"] is None and guess["status"] is None
+
+
+def test_import_reads_a_messy_colony_sheet(store):
+    frame = sheet(
+        ("101", "Female", "3/14/2025", "P/het/het", "A1", "", ""),
+        ("102", "m", "2025-03-14", "N / hom / WT", "A1", "", ""),
+        ("103", "F", "2025-09-01 00:00:00", "pos/fl/fl/+", "A2", "101", "102"),
+        ("104", "F", "2025-09-01", "", "A2", "101", "102"),
+    )
+    # 103's genotype has extra slashes, so it can't be split into 3 and is reported, not guessed.
+    result = run_import(store, frame)
+    assert result.added == ["101", "102", "104"]
+    assert result.problems[0]["Sheet row"] == 4 and "3 alleles" in result.problems[0]["Problem"]
+    mice = store.snapshot()["mice"].set_index("ear_tag")
+    assert logic.genotype_label(mice.loc["101"]) == "P / het / het" and mice.loc["101", "dob"] == "2025-03-14"
+    assert logic.genotype_label(mice.loc["102"]) == "N / hom / WT"
+    assert logic.genotype_label(mice.loc["104"]) == "TBD / TBD / TBD" and mice.loc["104", "mother"] == "101"
+    assert set(mice["genotyping_status"]) == {"Pending"}
+
+
+def test_import_honors_the_allele_order_of_the_sheet(store):
+    frame = sheet(("101", "F", "2025-03-14", "P/hom/het", "", "", ""))
+    run_import(store, frame, imports.GENOTYPE_ORDERS["Cre / Brca2 / p53"])
+    mouse = store.snapshot()["mice"].iloc[0]
+    assert (mouse["brca2"], mouse["p53"]) == ("hom", "het")
+
+
+def test_import_reads_separate_allele_columns_and_lab_notation(store):
+    frame = sheet(("101", "F", "2025-03-14", "+", "fl/fl", "+/+"), columns=("Tag", "Sex", "Born", "Cre", "p53", "Brca2"))
+    run_import(store, frame)
+    assert logic.genotype_label(store.snapshot()["mice"].iloc[0]) == "P / hom / WT"
+
+
+def test_import_keeps_good_rows_and_reports_bad_ones(store):
+    add(store, "EXISTS")
+    frame = sheet(
+        ("GOOD", "F", "2025-01-01", "P/het/het", "", "", ""),
+        ("EXISTS", "F", "2025-01-01", "P/het/het", "", "", ""),
+        ("NOSEX", "", "2025-01-01", "P/het/het", "", "", ""),
+        ("NOBIRTH", "F", "", "P/het/het", "", "", ""),
+        ("BADDATE", "F", "next spring", "P/het/het", "", "", ""),
+        ("BADCRE", "F", "2025-01-01", "maybe/het/het", "", "", ""),
+        ("", "F", "2025-01-01", "P/het/het", "", "", ""),
+    )
+    result = run_import(store, frame)
+    assert result.added == ["GOOD"]
+    messages = {p["Ear tag"]: p["Problem"] for p in result.problems}
+    assert "already in use" in messages["EXISTS"] and "Sex" in messages["NOSEX"]
+    assert "required" in messages["NOBIRTH"] and "valid date" in messages["BADDATE"]
+    assert "maybe" in messages["BADCRE"] and "required" in messages[""]
+
+
+def test_parents_link_even_when_a_pup_is_listed_first_and_bad_links_become_notes(store):
+    frame = sheet(
+        ("PUP", "F", "2025-06-01", "", "", "DAM", "MISSING"),
+        ("DAM", "F", "2025-01-01", "", "", "", ""),
+    )
+    result = run_import(store, frame)
+    mice = store.snapshot()["mice"].set_index("ear_tag")
+    assert mice.loc["PUP", "mother"] == "DAM" and mice.loc["PUP", "father"] == ""
+    assert "MISSING" in result.warnings[0]["Note"]
+
+
+def test_preview_changes_nothing_and_matches_the_real_import(store):
+    frame = sheet(("A", "F", "2025-01-01", "", "", "", ""), ("B", "", "2025-01-01", "", "", "", ""))
+    tables = store.snapshot()
+    mapping = imports.guess_columns(list(frame.columns))
+    preview = imports.preview_import(tables, frame, mapping, ORDER, ACTOR)
+    assert preview.added == ["A"] and len(preview.problems) == 1
+    assert store.snapshot()["mice"].empty
+    assert run_import(store, frame).added == preview.added
+
+
+def test_import_needs_an_ear_tag_column(store):
+    frame = sheet(("F",), columns=("Sex",))
+    with pytest.raises(ValidationError, match="ear tag"):
+        run_import(store, frame)
+
+
+def test_reading_csv_excel_and_bad_files(tmp_path):
+    table = sheet(("101", "F", "2025-01-01", "P/het/het", "A1", "", ""))
+    path = tmp_path / "s.xlsx"
+    table.to_excel(path, index=False)
+    assert list(imports.read_spreadsheet("s.xlsx", path.read_bytes())["Ear Tag"]) == ["101"]
+    csv_bytes = table.to_csv(index=False).encode()
+    assert list(imports.read_spreadsheet("s.csv", csv_bytes)["Genotype"]) == ["P/het/het"]
+    assert list(imports.read_spreadsheet("s.csv", b"Tag;Sex\n7;F\n")["Tag"]) == ["7"]
+    assert list(imports.read_spreadsheet("s.csv", "Tag,Note\n7,caf\xe9\n".encode("latin-1"))["Note"]) == ["caf\xe9"]
+    for name, content, message in (("s.csv", b"", "empty"), ("s.csv", b"Tag,Sex\n", "no rows"), ("s.xlsx", b"not excel", "couldn't be read")):
+        with pytest.raises(ValidationError, match=message):
+            imports.read_spreadsheet(name, content)
+
+
+def test_export_has_a_sheet_for_every_table(store):
+    colony_with_litter(store)
+    workbook = pd.read_excel(io.BytesIO(imports.export_workbook(store.snapshot())), sheet_name=None, dtype=str)
+    assert set(workbook) == set(store.snapshot())
+    assert set(workbook["mice"]["ear_tag"]) == {"M1", "F1"}
+
+
+# ---------- Cage cards ----------
+
+
+def test_cage_cards_make_a_pdf_with_a_page_per_six_cages(store):
+    for number in range(7):
+        add(store, f"T{number}", cage=f"C{number}")
+    pdf = cards.cage_cards_pdf(store.snapshot(), [f"C{n}" for n in range(7)], "PI name, protocol 123", today())
+    assert pdf[:5] == b"%PDF-"
+    assert pdf.count(b"/Type /Page\n") == 2 or pdf.count(b"/Type /Page ") == 2 or pdf.count(b"/Type /Page\r") == 2
+
+
+def test_cage_cards_cope_with_many_mice_and_unusual_text(store):
+    for number in range(12):
+        add(store, f"T{number}", cage="C\u00b5\u2603")
+    pdf = cards.cage_cards_pdf(store.snapshot(), ["C\u00b5\u2603"], "Prot\u2603col", today())
+    assert pdf[:5] == b"%PDF-"
+
+
+def test_cards_list_only_cages_with_living_mice(store):
+    add(store, "A", cage="C2")
+    add(store, "B", cage="C10")
+    add(store, "C", cage="C3", status="Deceased")
+    add(store, "D")
+    assert cards.cages_with_mice(store.snapshot()["mice"]) == ["C2", "C10"]

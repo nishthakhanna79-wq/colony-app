@@ -83,6 +83,7 @@ TABLE_COLUMNS: dict[str, list[str]] = {
         "updated_by",
         "updated_at",
     ],
+    "moves": ["moved_on", "ear_tag", "from_cage", "to_cage", "updated_by"],
     "settings": ["key", "value"],
 }
 

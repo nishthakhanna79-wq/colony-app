@@ -159,6 +159,32 @@ def _genotyping_fields(row: dict[str, str], data: dict) -> dict[str, str]:
     return {"genotyping_status": status, "genotype_confirmed_on": confirmed}
 
 
+def _move(tables: Tables, ear_tag: str, to_cage: str, moved_on: str, actor: str) -> bool:
+    mice = tables["mice"]
+    index = _row_index(mice, "ear_tag", ear_tag, "Mouse")
+    from_cage = mice.loc[index, "cage"]
+    if from_cage == to_cage:
+        return False
+    mice.loc[index, "cage"] = to_cage
+    mice.loc[index, "updated_by"] = actor
+    mice.loc[index, "updated_at"] = now_iso()
+    tables["moves"] = _append(
+        tables["moves"],
+        {"moved_on": moved_on, "ear_tag": ear_tag, "from_cage": from_cage, "to_cage": to_cage, "updated_by": actor},
+    )
+    return True
+
+
+def move_mice(tx: Transaction, ear_tags: list[str], to_cage: object, moved_on: object, actor: str) -> int:
+    if not ear_tags:
+        raise ValidationError("Choose at least one mouse to move.")
+    cage = clean_text(to_cage)
+    if not cage:
+        raise ValidationError("Enter the cage to move to.")
+    on = clean_date(moved_on, "Date moved")
+    return sum(_move(tx.tables, tag, cage, on, actor) for tag in ear_tags)
+
+
 def add_mouse(tx: Transaction, data: dict, actor: str) -> str:
     mice = tx.tables["mice"]
     row = _clean_mouse(mice, data, actor, None)
@@ -172,11 +198,13 @@ def update_mouse(tx: Transaction, ear_tag: str, data: dict, actor: str) -> str:
     index = _row_index(mice, "ear_tag", ear_tag, "Mouse")
     merged = {**mice.loc[index].to_dict(), **data}
     row = _clean_mouse(mice, merged, actor, ear_tag)
+    new_cage = row.pop("cage")
     for column, value in row.items():
         mice.loc[index, column] = value
     new_tag = row["ear_tag"]
     if new_tag != ear_tag:
         _rename_references(tables, ear_tag, new_tag)
+    _move(tables, new_tag, new_cage, today().isoformat(), actor)
     return new_tag
 
 
@@ -189,6 +217,7 @@ def _rename_references(tables: Tables, old: str, new: str) -> None:
         lambda linked: ";".join(new if tag == old else tag for tag in linked.split(";") if tag)
     ).astype(str)
     tables["tumors"].loc[tables["tumors"]["ear_tag"] == old, "ear_tag"] = new
+    tables["moves"].loc[tables["moves"]["ear_tag"] == old, "ear_tag"] = new
 
 
 def mouse_references(tables: Tables, ear_tag: str) -> list[str]:
@@ -215,6 +244,8 @@ def delete_mouse(tx: Transaction, ear_tag: str) -> None:
             "Mark it Deceased or Retired instead."
         )
     tx.tables["mice"] = tx.tables["mice"].drop(index=index).reset_index(drop=True)
+    moves = tx.tables["moves"]
+    tx.tables["moves"] = moves[moves["ear_tag"] != ear_tag].reset_index(drop=True)
 
 
 def add_pair(tx: Transaction, male: str, female: str, cage: object, start_date: object, notes: object, actor: str) -> str:
@@ -253,9 +284,11 @@ def add_pair(tx: Transaction, male: str, female: str, cage: object, start_date: 
     )
     is_parent = mice["ear_tag"].isin([male, female])
     mice.loc[is_parent, "status"] = "Breeder"
-    mice.loc[is_parent, "cage"] = cage_text
     mice.loc[is_parent, "updated_by"] = actor
     mice.loc[is_parent, "updated_at"] = now_iso()
+    started = clean_date(start_date, "Start date")
+    _move(tables, male, cage_text, started, actor)
+    _move(tables, female, cage_text, started, actor)
     return pair_id
 
 
@@ -536,6 +569,7 @@ __all__ = [
     "delete_tumor",
     "get_settings",
     "mouse_references",
+    "move_mice",
     "prepare_gel_file",
     "record_genotypes",
     "retire_pair",

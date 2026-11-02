@@ -2,3 +2,5 @@ streamlit==1.66.1
 pandas>=2.2
 pillow>=11
 requests>=2.31
+fpdf2>=2.8
+openpyxl>=3.1
