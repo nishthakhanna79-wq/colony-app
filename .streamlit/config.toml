@@ -1,0 +1,19 @@
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = "none"
+
+[server]
+maxUploadSize = 25
+
+[theme]
+base = "light"
+primaryColor = "#0F5C56"
+backgroundColor = "#FBFAF6"
+secondaryBackgroundColor = "#EFEDE4"
+textColor = "#1B1F1E"
+baseRadius = "small"
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
