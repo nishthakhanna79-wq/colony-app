@@ -169,12 +169,149 @@ def pair_summary(tables: Tables, today: date, gap_weeks: int) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
+PLUG_WINDOW_DAYS = 5  # A litter this close to the expected date is taken to come from the plug.
+PLUG_OVERDUE_DAYS = 7  # Past this, a plug is treated as not leading to a litter.
+
+
+def plug_table(tables: Tables, settings: dict[str, int], today: date) -> pd.DataFrame:
+    """Each plug with its expected birth date and what became of it, newest first."""
+    columns = ["Plug", "Pair", "Male", "Female", "Cage", "Plug date", "Expected birth", "Status", "_open", "_days"]
+    pairs = {row["pair_id"]: row for _, row in tables["pairs"].iterrows()}
+    rows = []
+    for _, plug in tables["plugs"].iterrows():
+        plugged = parse_iso(plug["plug_date"])
+        pair = pairs.get(plug["pair_id"])
+        if plugged is None or pair is None:
+            continue
+        expected = plugged + timedelta(days=settings["gestation_days"])
+        window_start = expected - timedelta(days=PLUG_WINDOW_DAYS)
+        window_end = expected + timedelta(days=PLUG_WINDOW_DAYS)
+        litter_id = ""
+        for _, litter in tables["litters"][tables["litters"]["pair_id"] == plug["pair_id"]].iterrows():
+            born = parse_iso(litter["dob"])
+            if born and window_start <= born <= window_end:
+                litter_id = litter["litter_id"]
+        days = (expected - today).days
+        is_open = False
+        if litter_id:
+            status = f"Litter {litter_id}"
+        elif days < -PLUG_OVERDUE_DAYS:
+            status = "No litter recorded"
+        else:
+            is_open = True
+            status = f"Due in {days} days" if days > 0 else ("Due today" if days == 0 else f"{-days} days overdue")
+        rows.append(
+            {
+                "Plug": plug["plug_id"],
+                "Pair": plug["pair_id"],
+                "Male": pair["male"],
+                "Female": pair["female"],
+                "Cage": pair["cage"],
+                "Plug date": plug["plug_date"],
+                "Expected birth": expected.isoformat(),
+                "Status": status,
+                "_open": is_open,
+                "_days": days,
+            }
+        )
+    frame = pd.DataFrame(rows, columns=columns)
+    return frame.sort_values("Plug date", ascending=False).reset_index(drop=True)
+
+
+def breeders_to_replace(tables: Tables, settings: dict[str, int], today: date) -> pd.DataFrame:
+    """Mice in active pairs that are past the replacement age, or that have died."""
+    by_tag = {row["ear_tag"]: row for _, row in tables["mice"].iterrows()}
+    rows = []
+    for _, pair in tables["pairs"][tables["pairs"]["status"] == "Active"].iterrows():
+        for tag in (pair["male"], pair["female"]):
+            mouse = by_tag.get(tag)
+            if mouse is None:
+                continue
+            age = age_days(mouse["dob"], today)
+            if mouse["status"] == "Deceased":
+                reason = "Deceased"
+            elif age is not None and age >= settings["breeder_replace_days"]:
+                reason = "Age"
+            else:
+                continue
+            rows.append({"Ear tag": tag, "Pair": pair["pair_id"], "Cage": pair["cage"], "Age (days)": age, "Reason": reason})
+    return pd.DataFrame(rows, columns=["Ear tag", "Pair", "Cage", "Age (days)", "Reason"])
+
+
+def _when(days: int) -> str:
+    if days == 0:
+        return "Today"
+    return f"In {days} days" if days > 0 else f"{-days} days overdue"
+
+
+def open_tasks(tables: Tables, today: date) -> pd.DataFrame:
+    """Open tasks, soonest first, with how far away each is."""
+    columns = ["Task", "What", "Due", "When", "Who", "About", "_days"]
+    rows = []
+    for _, task in tables["tasks"][tables["tasks"]["status"] == "Open"].iterrows():
+        due = parse_iso(task["due_date"])
+        days = (due - today).days if due else 0
+        rows.append(
+            {
+                "Task": task["task_id"],
+                "What": task["title"],
+                "Due": task["due_date"],
+                "When": _when(days),
+                "Who": task["who"],
+                "About": task["about"],
+                "_days": days,
+            }
+        )
+    frame = pd.DataFrame(rows, columns=columns)
+    return frame.sort_values("_days").reset_index(drop=True)
+
+
+def agenda(tables: Tables, settings: dict[str, int], today: date, days: int = 30) -> pd.DataFrame:
+    """Everything coming up, by date: tasks, weaning, expected litters and age thresholds."""
+    columns = ["Date", "When", "Type", "Detail"]
+    rows = []
+
+    def add(moment: date, kind: str, detail: str) -> None:
+        rows.append({"Date": moment.isoformat(), "When": _when((moment - today).days), "Type": kind, "Detail": detail})
+
+    horizon = today + timedelta(days=days)
+    for _, task in open_tasks(tables, today).iterrows():
+        due = parse_iso(task["Due"])
+        if due and due <= horizon:
+            who = f" ({task['Who']})" if task["Who"] else ""
+            add(due, "Task", f"{task['What']}{who}")
+    for _, litter in tables["litters"].iterrows():
+        born = parse_iso(litter["dob"])
+        if born is None or litter["weaning_date"] or litter["status"] != "Pending genotyping":
+            continue
+        due = born + timedelta(days=settings["wean_age_days"])
+        if due <= horizon:
+            add(due, "Wean", f"Litter {litter['litter_id']}, pair {litter['pair_id']}")
+    plugs = plug_table(tables, settings, today)
+    for _, plug in plugs[plugs["_open"].astype(bool)].iterrows():
+        expected = parse_iso(plug["Expected birth"])
+        if expected and expected <= horizon:
+            add(expected, "Expected litter", f"Pair {plug['Pair']}, cage {plug['Cage']}")
+    for _, mouse in tables["mice"].iterrows():
+        born = parse_iso(mouse["dob"])
+        if born is None or mouse["status"] not in ("Unassigned", "Experimental"):
+            continue
+        reaches = born + timedelta(days=settings["age_threshold_days"])
+        if today <= reaches <= horizon:
+            add(reaches, "Age threshold", f"Mouse {mouse['ear_tag']}, cage {mouse['cage'] or 'none'}")
+    frame = pd.DataFrame(rows, columns=columns)
+    return frame.sort_values("Date").reset_index(drop=True)
+
+
 @dataclass
 class Alerts:
     wean: pd.DataFrame
     quiet_pairs: pd.DataFrame
     age: pd.DataFrame
     genotyping: pd.DataFrame
+    expected: pd.DataFrame
+    replace: pd.DataFrame
+    tasks: pd.DataFrame
 
 
 def build_alerts(tables: Tables, settings: dict[str, int], today: date) -> Alerts:
@@ -232,7 +369,20 @@ def build_alerts(tables: Tables, settings: dict[str, int], today: date) -> Alert
     age_frame = age_frame.sort_values("Age (days)", ascending=False).reset_index(drop=True)
     genotyping = pd.DataFrame(genotyping_rows, columns=["Ear tag", "Genotype", "Cage", "Age (days)"])
     genotyping = genotyping.sort_values("Age (days)", ascending=False).reset_index(drop=True)
-    return Alerts(wean=wean, quiet_pairs=quiet, age=age_frame, genotyping=genotyping)
+    plugs = plug_table(tables, settings, today)
+    upcoming = plugs[plugs["_open"].astype(bool) & (plugs["_days"].astype(int) <= 7)]
+    expected = upcoming.sort_values("_days")[["Pair", "Cage", "Plug date", "Expected birth", "Status"]].reset_index(drop=True)
+    tasks = open_tasks(tables, today)
+    tasks = tasks[tasks["_days"].astype(int) <= 7][["What", "Due", "When", "Who", "About"]].reset_index(drop=True)
+    return Alerts(
+        wean=wean,
+        quiet_pairs=quiet,
+        age=age_frame,
+        genotyping=genotyping,
+        expected=expected,
+        replace=breeders_to_replace(tables, settings, today),
+        tasks=tasks,
+    )
 
 
 def cage_census(mice: pd.DataFrame, capacity: int) -> pd.DataFrame:

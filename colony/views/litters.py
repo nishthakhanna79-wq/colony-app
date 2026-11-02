@@ -177,6 +177,37 @@ def _record_genotypes(ctx: ui.Context, litter_id: str, pups: pd.DataFrame) -> No
             st.rerun()
 
 
+def _wean(ctx: ui.Context, litter) -> None:
+    litter_id = litter["litter_id"]
+    name = f"wean_{litter_id}"
+    round_id = ui.form_round(name)
+    with st.expander("Wean this litter", expanded=not litter["weaning_date"]):
+        with st.form(f"{name}_{round_id}"):
+            weaned_on = st.date_input(
+                "Weaning date",
+                value=today(),
+                min_value=ui.EARLIEST_DATE,
+                max_value=today(),
+                format="YYYY-MM-DD",
+                key=f"{name}_date_{round_id}",
+            )
+            first, second = st.columns(2)
+            with first:
+                female_cage = st.text_input("Cage for females", key=f"{name}_f_{round_id}")
+            with second:
+                male_cage = st.text_input("Cage for males", key=f"{name}_m_{round_id}")
+            st.caption("Moves the recorded pups by sex. Leave a cage blank to keep those pups where they are.")
+            submitted = ui.primary_submit("Wean litter")
+    if submitted and ui.save(
+        ctx,
+        f"Wean litter {litter_id}",
+        lambda tx: ops.wean_litter(tx, litter_id, weaned_on, female_cage, male_cage, ctx.user),
+        f"Weaned litter {litter_id}.",
+    ):
+        ui.next_round(name)
+        st.rerun()
+
+
 def _update_litter(ctx: ui.Context, litter) -> None:
     litter_id = litter["litter_id"]
     name = f"update_{litter_id}"
@@ -235,6 +266,7 @@ def _detail(ctx: ui.Context, tables, litter_id: str) -> None:
     if len(pups):
         _record_genotypes(ctx, litter_id, pups)
     _add_pups(ctx, litter, breakdown["recorded"])
+    _wean(ctx, litter)
     _update_litter(ctx, litter)
 
 

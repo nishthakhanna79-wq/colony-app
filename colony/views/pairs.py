@@ -56,6 +56,52 @@ def _add(ctx: ui.Context, tables) -> None:
         st.rerun()
 
 
+def _plugs(ctx: ui.Context, tables, settings, pair_id: str, active: bool) -> None:
+    plugs = logic.plug_table(tables, settings, today())
+    mine = plugs[plugs["Pair"] == pair_id]
+    st.markdown(f"**Plugs ({len(mine)})**")
+    if len(mine):
+        ui.table(mine[["Plug date", "Expected birth", "Status"]])
+    if active:
+        name = f"plug_{pair_id}"
+        round_id = ui.form_round(name)
+        with st.form(f"{name}_{round_id}"):
+            first, second = st.columns(2)
+            with first:
+                plug_date = st.date_input(
+                    "Plug date",
+                    value=today(),
+                    min_value=ui.EARLIEST_DATE,
+                    max_value=today(),
+                    format="YYYY-MM-DD",
+                    key=f"{name}_date_{round_id}",
+                )
+            with second:
+                notes = st.text_input("Notes", key=f"{name}_notes_{round_id}")
+            submitted = ui.primary_submit("Save plug")
+        if submitted and ui.save(
+            ctx,
+            f"Add plug for pair {pair_id}",
+            lambda tx: ops.add_plug(tx, pair_id, plug_date, notes),
+            f"Saved plug for pair {pair_id}.",
+        ):
+            ui.next_round(name)
+            st.rerun()
+    if len(mine):
+        with st.expander("Delete a plug"):
+            plug_id = st.selectbox(
+                "Plug",
+                list(mine["Plug"]),
+                format_func=lambda value: mine.set_index("Plug").loc[value, "Plug date"],
+                key=f"plug_delete_{pair_id}",
+            )
+            confirm = st.checkbox("Yes, delete this plug", key=f"plug_delete_confirm_{pair_id}")
+            if st.button("Delete", disabled=not confirm, key=f"plug_delete_go_{pair_id}") and ui.save(
+                ctx, f"Delete plug {plug_id}", lambda tx: ops.delete_plug(tx, plug_id), "Deleted the plug."
+            ):
+                st.rerun()
+
+
 def render(ctx: ui.Context) -> None:
     tables = ctx.store.snapshot()
     settings = ops.get_settings(tables)
@@ -94,6 +140,8 @@ def render(ctx: ui.Context) -> None:
         )
     else:
         st.caption("No litters recorded.")
+
+    _plugs(ctx, tables, settings, pair_id, pair["status"] == "Active")
 
     if pair["status"] == "Active" and st.button("Retire this pair", key=f"retire_{pair_id}"):
         if ui.save(ctx, f"Retire pair {pair_id}", lambda tx: ops.retire_pair(tx, pair_id), f"Retired pair {pair_id}."):

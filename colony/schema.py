@@ -27,6 +27,7 @@ LITTER_STATUSES = ["Pending genotyping", "Weaned", "Pups assigned"]
 GEL_RESULTS = ["Pass", "Fail", "Ambiguous"]
 GEL_LOCI = ["Cre", "p53", "Brca2", "Other"]
 BREEDING_CHOICES = ["Yes", "No"]
+TASK_STATUSES = ["Open", "Done"]
 TUMOR_OUTCOMES = ["Alive", "Deceased", "Collected"]
 
 TABLE_COLUMNS: dict[str, list[str]] = {
@@ -84,6 +85,8 @@ TABLE_COLUMNS: dict[str, list[str]] = {
         "updated_at",
     ],
     "moves": ["moved_on", "ear_tag", "from_cage", "to_cage", "updated_by"],
+    "plugs": ["plug_id", "pair_id", "plug_date", "notes"],
+    "tasks": ["task_id", "title", "due_date", "who", "about", "status", "done_on", "notes"],
     "settings": ["key", "value"],
 }
 
@@ -93,6 +96,8 @@ DEFAULT_SETTINGS = {
     "age_threshold_days": 240,
     "genotyping_pending_days": 21,
     "cage_capacity": 5,
+    "gestation_days": 20,
+    "breeder_replace_days": 240,
 }
 
 SETTING_LABELS = {
@@ -101,6 +106,8 @@ SETTING_LABELS = {
     "age_threshold_days": "Age threshold for tumor imaging or cohorts (days)",
     "genotyping_pending_days": "Flag genotyping pending past this age (days)",
     "cage_capacity": "Mice per cage",
+    "gestation_days": "Days from plug to expected birth",
+    "breeder_replace_days": "Flag breeders for replacement at this age (days)",
 }
 
 

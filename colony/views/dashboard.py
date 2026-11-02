@@ -31,6 +31,8 @@ def render(ctx: ui.Context) -> None:
     st.subheader("To do")
     alerts = logic.build_alerts(tables, settings, today())
     problems = logic.inheritance_problems(mice)
+    _todo("Tasks due", alerts.tasks, "No tasks are due in the next 7 days.")
+    _todo("Litters expected", alerts.expected, "No plugs are due in the next 7 days.")
     _todo("Pups to wean", alerts.wean, "No litters are due in the next 7 days.")
     _todo("Genotyping pending", alerts.genotyping, f"No mouse older than {settings['genotyping_pending_days']} days is waiting.")
     _todo(
@@ -42,6 +44,11 @@ def render(ctx: ui.Context) -> None:
         f"Mice reaching {settings['age_threshold_days']} days",
         alerts.age,
         "No unassigned or experimental mouse is within 14 days of the threshold.",
+    )
+    _todo(
+        "Breeders to replace",
+        alerts.replace,
+        f"No active breeder has reached {settings['breeder_replace_days']} days or died.",
     )
     _todo("Genotypes that don't fit the parents", problems, "No conflicts found.")
 

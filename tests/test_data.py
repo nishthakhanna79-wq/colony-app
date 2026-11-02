@@ -326,7 +326,15 @@ def test_pending_pups_are_excluded_from_ratios():
 # ---------- Alerts ----------
 
 
-SETTINGS = {"wean_age_days": 21, "litter_gap_weeks": 8, "age_threshold_days": 240, "genotyping_pending_days": 21, "cage_capacity": 2}
+SETTINGS = {
+    "wean_age_days": 21,
+    "litter_gap_weeks": 8,
+    "age_threshold_days": 240,
+    "genotyping_pending_days": 21,
+    "cage_capacity": 2,
+    "gestation_days": 20,
+    "breeder_replace_days": 240,
+}
 
 
 def test_wean_alert_timing(store):
@@ -710,3 +718,149 @@ def test_cards_list_only_cages_with_living_mice(store):
     add(store, "C", cage="C3", status="Deceased")
     add(store, "D")
     assert cards.cages_with_mice(store.snapshot()["mice"]) == ["C2", "C10"]
+
+
+# ---------- Weaning ----------
+
+
+def test_weaning_moves_pups_by_sex_and_records_it(store):
+    _, litter = colony_with_litter(store)
+    rows = [dict(ear_tag="PF", sex="F", cage="C7"), dict(ear_tag="PM", sex="M", cage="C7"), dict(ear_tag="PX", sex="F", cage="C7", status="Deceased")]
+    store.transaction("p", lambda tx: ops.add_pups(tx, litter, rows, ACTOR))
+    assert store.transaction("w", lambda tx: ops.wean_litter(tx, litter, today(), "F-CAGE", "M-CAGE", ACTOR)) == 2
+    tables = store.snapshot()
+    mice = tables["mice"].set_index("ear_tag")
+    assert (mice.loc["PF", "cage"], mice.loc["PM", "cage"], mice.loc["PX", "cage"]) == ("F-CAGE", "M-CAGE", "C7")
+    row = tables["litters"].iloc[0]
+    assert (row["weaning_date"], row["status"]) == (today().isoformat(), "Weaned")
+    assert logic.build_alerts(tables, SETTINGS, today()).wean.empty
+
+
+def test_blank_wean_cage_leaves_pups_in_place(store):
+    _, litter = colony_with_litter(store)
+    store.transaction("p", lambda tx: ops.add_pups(tx, litter, [dict(ear_tag="PF", sex="F", cage="C7")], ACTOR))
+    assert store.transaction("w", lambda tx: ops.wean_litter(tx, litter, today(), "", "", ACTOR)) == 0
+
+
+def test_cannot_wean_before_birth(store):
+    _, litter = colony_with_litter(store)
+    with pytest.raises(ValidationError, match="before the litter"):
+        store.transaction("w", lambda tx: ops.wean_litter(tx, litter, old(30), "", "", ACTOR))
+
+
+# ---------- Plugs ----------
+
+
+def plugged_pair(store, days_ago=5):
+    add(store, "M1", sex="M", days=100)
+    add(store, "F1", sex="F", days=100)
+    pair = store.transaction("p", lambda tx: ops.add_pair(tx, "M1", "F1", "C1", old(60), "", ACTOR))
+    store.transaction("g", lambda tx: ops.add_plug(tx, pair, old(days_ago), ""))
+    return pair
+
+
+def test_plug_gives_an_expected_birth_and_shows_on_the_dashboard_when_near(store):
+    plugged_pair(store, days_ago=15)
+    row = logic.plug_table(store.snapshot(), SETTINGS, today()).iloc[0]
+    assert row["Expected birth"] == (today() + timedelta(days=5)).isoformat() and row["Status"] == "Due in 5 days"
+    assert list(logic.build_alerts(store.snapshot(), SETTINGS, today()).expected["Status"]) == ["Due in 5 days"]
+
+
+def test_recent_plug_stays_off_the_dashboard_until_near(store):
+    plugged_pair(store, days_ago=2)
+    assert logic.build_alerts(store.snapshot(), SETTINGS, today()).expected.empty
+
+
+def test_a_litter_near_the_expected_date_closes_the_plug(store):
+    pair = plugged_pair(store, days_ago=20)
+    litter = store.transaction("l", lambda tx: ops.add_litter(tx, pair, old(1), 6, ""))
+    row = logic.plug_table(store.snapshot(), SETTINGS, today()).iloc[0]
+    assert row["Status"] == f"Litter {litter}" and not row["_open"]
+    assert logic.build_alerts(store.snapshot(), SETTINGS, today()).expected.empty
+
+
+def test_overdue_plug_flags_then_stops_flagging(store):
+    plugged_pair(store, days_ago=23)
+    assert logic.plug_table(store.snapshot(), SETTINGS, today()).iloc[0]["Status"] == "3 days overdue"
+    store.transaction("g", lambda tx: ops.add_plug(tx, "P001", old(40), ""))
+    statuses = dict(zip(*[logic.plug_table(store.snapshot(), SETTINGS, today())[c] for c in ("Plug date", "Status")]))
+    assert statuses[old(40)] == "No litter recorded"
+
+
+def test_duplicate_plug_is_refused_and_a_plug_can_be_deleted(store):
+    plugged_pair(store, days_ago=5)
+    with pytest.raises(ValidationError, match="already has a plug"):
+        store.transaction("g", lambda tx: ops.add_plug(tx, "P001", old(5), ""))
+    store.transaction("d", lambda tx: ops.delete_plug(tx, "PG001"))
+    assert store.snapshot()["plugs"].empty
+
+
+def test_cage_card_includes_an_open_plug(store):
+    plugged_pair(store, days_ago=5)
+    assert cards.cage_cards_pdf(store.snapshot(), ["C1"], "", today())[:5] == b"%PDF-"
+
+
+# ---------- Breeder replacement ----------
+
+
+def test_old_or_dead_breeders_in_active_pairs_are_flagged(store):
+    add(store, "OLD", sex="M", days=300)
+    add(store, "YOUNG", sex="F", days=100)
+    add(store, "M2", sex="M", days=100)
+    add(store, "F2", sex="F", days=100)
+    store.transaction("p", lambda tx: ops.add_pair(tx, "OLD", "YOUNG", "C1", old(60), "", ACTOR))
+    second = store.transaction("p", lambda tx: ops.add_pair(tx, "M2", "F2", "C2", old(60), "", ACTOR))
+    store.transaction("u", lambda tx: ops.update_mouse(tx, "F2", {"status": "Deceased"}, ACTOR))
+    flagged = logic.breeders_to_replace(store.snapshot(), SETTINGS, today()).set_index("Ear tag")
+    assert set(flagged.index) == {"OLD", "F2"}
+    assert flagged.loc["OLD", "Reason"] == "Age" and flagged.loc["F2", "Reason"] == "Deceased"
+    store.transaction("r", lambda tx: ops.retire_pair(tx, second))
+    assert set(logic.breeders_to_replace(store.snapshot(), SETTINGS, today())["Ear tag"]) == {"OLD"}
+
+
+# ---------- Tasks and calendar ----------
+
+
+def future(days):
+    return (today() + timedelta(days=days)).isoformat()
+
+
+def test_tasks_sort_by_due_date_and_flag_when_due(store):
+    store.transaction("t", lambda tx: ops.add_task(tx, "Later", future(20), "", "", ""))
+    store.transaction("t", lambda tx: ops.add_task(tx, "Soon", future(1), "Abc", "C1", ""))
+    store.transaction("t", lambda tx: ops.add_task(tx, "Late", old(2), "", "", ""))
+    tasks = logic.open_tasks(store.snapshot(), today())
+    assert list(tasks["What"]) == ["Late", "Soon", "Later"]
+    assert list(tasks["When"]) == ["2 days overdue", "In 1 days", "In 20 days"]
+    assert list(logic.build_alerts(store.snapshot(), SETTINGS, today()).tasks["What"]) == ["Late", "Soon"]
+
+
+def test_finishing_a_task_removes_it_and_it_can_be_reopened(store):
+    task = store.transaction("t", lambda tx: ops.add_task(tx, "Do it", future(1), "", "", ""))
+    store.transaction("d", lambda tx: ops.set_task_done(tx, task, True))
+    tables = store.snapshot()
+    assert logic.open_tasks(tables, today()).empty and tables["tasks"].iloc[0]["done_on"] == today().isoformat()
+    store.transaction("d", lambda tx: ops.set_task_done(tx, task, False))
+    assert len(logic.open_tasks(store.snapshot(), today())) == 1
+    store.transaction("x", lambda tx: ops.delete_task(tx, task))
+    assert store.snapshot()["tasks"].empty
+
+
+def test_task_needs_a_title_and_may_be_due_in_the_future(store):
+    with pytest.raises(ValidationError, match="what needs doing"):
+        store.transaction("t", lambda tx: ops.add_task(tx, " ", future(1), "", "", ""))
+    assert store.transaction("t", lambda tx: ops.add_task(tx, "Fine", future(400), "", "", "")) == "T0001"
+
+
+def test_agenda_collects_everything_coming_up_in_date_order(store):
+    add(store, "NEAR", days=230, status="Experimental")
+    add(store, "BRED", days=230, status="Breeder")
+    pair = plugged_pair(store, days_ago=10)
+    store.transaction("l", lambda tx: ops.add_litter(tx, pair, old(15), 4, ""))
+    store.transaction("t", lambda tx: ops.add_task(tx, "Order chow", future(2), "Abc", "", ""))
+    store.transaction("t", lambda tx: ops.add_task(tx, "Far away", future(90), "", "", ""))
+    frame = logic.agenda(store.snapshot(), SETTINGS, today(), days=30)
+    assert list(frame["Date"]) == sorted(frame["Date"])
+    assert set(frame["Type"]) == {"Task", "Wean", "Expected litter", "Age threshold"}
+    details = " | ".join(frame["Detail"])
+    assert "Order chow (Abc)" in details and "Far away" not in details and "NEAR" in details and "BRED" not in details

@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 from fpdf import FPDF
 
-from . import logic
+from . import logic, ops
 from .store import Tables
 
 CARD_WIDTH = 4.0
@@ -62,6 +62,13 @@ def _card(pdf: FPDF, x: float, y: float, cage: str, tables: Tables, header: str,
             last = litters.sort_values("dob").iloc[-1]
             pdf.set_xy(inner, next_y)
             pdf.cell(width, 0.16, _fit(pdf, f"Last litter {last['litter_id']}, born {last['dob']}, {last['n_pups']} pups", width))
+            next_y += 0.16
+        plugs = logic.plug_table(tables, ops.get_settings(tables), printed)
+        waiting = plugs[(plugs["Pair"] == pair["pair_id"]) & plugs["_open"].astype(bool)]
+        if len(waiting):
+            plug = waiting.iloc[0]
+            pdf.set_xy(inner, next_y)
+            pdf.cell(width, 0.16, _fit(pdf, f"Plug {plug['Plug date']}, expected birth {plug['Expected birth']}", width))
             next_y += 0.16
 
     mice = tables["mice"]

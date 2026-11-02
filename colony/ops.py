@@ -339,6 +339,80 @@ def update_litter(tx: Transaction, litter_id: str, n_pups: object, weaning_date:
     litters.loc[index, "notes"] = clean_text(notes)
 
 
+def wean_litter(tx: Transaction, litter_id: str, weaned_on: object, female_cage: object, male_cage: object, actor: str) -> int:
+    """Record weaning and move recorded pups by sex. A blank cage leaves those pups in place."""
+    tables = tx.tables
+    litters = tables["litters"]
+    index = _row_index(litters, "litter_id", litter_id, "Litter")
+    on = clean_date(weaned_on, "Weaning date")
+    if on < litters.loc[index, "dob"]:
+        raise ValidationError("Weaning date can't be before the litter's date of birth.")
+    litters.loc[index, "weaning_date"] = on
+    litters.loc[index, "status"] = "Weaned"
+    moved = 0
+    pups = tables["mice"][(tables["mice"]["litter_id"] == litter_id) & (tables["mice"]["status"] != "Deceased")]
+    targets = {"F": clean_text(female_cage), "M": clean_text(male_cage)}
+    for _, pup in pups.iterrows():
+        target = targets.get(pup["sex"], "")
+        if target and _move(tables, pup["ear_tag"], target, on, actor):
+            moved += 1
+    return moved
+
+
+def add_plug(tx: Transaction, pair_id: str, plug_date: object, notes: object) -> str:
+    tables = tx.tables
+    if not pair_id:
+        raise ValidationError("Choose a breeding pair.")
+    _row_index(tables["pairs"], "pair_id", pair_id, "Pair")
+    on = clean_date(plug_date, "Plug date")
+    plugs = tables["plugs"]
+    if ((plugs["pair_id"] == pair_id) & (plugs["plug_date"] == on)).any():
+        raise ValidationError(f"Pair {pair_id} already has a plug on {on}.")
+    plug_id = _next_id(plugs["plug_id"], "PG", 3)
+    tables["plugs"] = _append(plugs, {"plug_id": plug_id, "pair_id": pair_id, "plug_date": on, "notes": clean_text(notes)})
+    return plug_id
+
+
+def delete_plug(tx: Transaction, plug_id: str) -> None:
+    plugs = tx.tables["plugs"]
+    index = _row_index(plugs, "plug_id", plug_id, "Plug")
+    tx.tables["plugs"] = plugs.drop(index=index).reset_index(drop=True)
+
+
+def add_task(tx: Transaction, title: object, due_date: object, who: object, about: object, notes: object) -> str:
+    text = clean_text(title)
+    if not text:
+        raise ValidationError("Say what needs doing.")
+    tasks = tx.tables["tasks"]
+    task_id = _next_id(tasks["task_id"], "T", 4)
+    tx.tables["tasks"] = _append(
+        tasks,
+        {
+            "task_id": task_id,
+            "title": text,
+            "due_date": clean_date(due_date, "Due date", allow_future=True),
+            "who": clean_text(who),
+            "about": clean_text(about),
+            "status": "Open",
+            "notes": clean_text(notes),
+        },
+    )
+    return task_id
+
+
+def set_task_done(tx: Transaction, task_id: str, done: bool) -> None:
+    tasks = tx.tables["tasks"]
+    index = _row_index(tasks, "task_id", task_id, "Task")
+    tasks.loc[index, "status"] = "Done" if done else "Open"
+    tasks.loc[index, "done_on"] = today().isoformat() if done else ""
+
+
+def delete_task(tx: Transaction, task_id: str) -> None:
+    tasks = tx.tables["tasks"]
+    index = _row_index(tasks, "task_id", task_id, "Task")
+    tx.tables["tasks"] = tasks.drop(index=index).reset_index(drop=True)
+
+
 def add_pups(tx: Transaction, litter_id: str, rows: list[dict], actor: str) -> int:
     """Create every pup in `rows`, or none of them if any row is wrong."""
     tables = tx.tables
@@ -576,5 +650,11 @@ __all__ = [
     "save_settings",
     "update_litter",
     "update_mouse",
+    "add_plug",
+    "add_task",
+    "delete_plug",
+    "delete_task",
+    "set_task_done",
+    "wean_litter",
     "update_tumor",
 ]
