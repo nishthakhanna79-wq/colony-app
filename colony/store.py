@@ -125,6 +125,9 @@ class Store:
                 return result
         raise StoreError("Too many people saved at once and your change did not save. Try again.")
 
+    def history(self, limit: int = 50) -> list[dict[str, str]]:
+        return self.backend.history(limit)
+
     def read_file(self, path: str) -> bytes | None:
         self.refresh()
         if self._head is None:

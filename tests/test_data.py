@@ -831,7 +831,7 @@ def test_tasks_sort_by_due_date_and_flag_when_due(store):
     store.transaction("t", lambda tx: ops.add_task(tx, "Late", old(2), "", "", ""))
     tasks = logic.open_tasks(store.snapshot(), today())
     assert list(tasks["What"]) == ["Late", "Soon", "Later"]
-    assert list(tasks["When"]) == ["2 days overdue", "In 1 days", "In 20 days"]
+    assert list(tasks["When"]) == ["2 days overdue", "In 1 day", "In 20 days"]
     assert list(logic.build_alerts(store.snapshot(), SETTINGS, today()).tasks["What"]) == ["Late", "Soon"]
 
 
@@ -864,3 +864,119 @@ def test_agenda_collects_everything_coming_up_in_date_order(store):
     assert set(frame["Type"]) == {"Task", "Wean", "Expected litter", "Age threshold"}
     details = " | ".join(frame["Detail"])
     assert "Order chow (Abc)" in details and "Far away" not in details and "NEAR" in details and "BRED" not in details
+
+
+# ---------- Progeny ----------
+
+
+def family():
+    return pd.DataFrame(
+        [
+            mouse_row("GM"),
+            mouse_row("GF", sex="M"),
+            mouse_row("KID1", mother="GM", father="GF"),
+            mouse_row("KID2", sex="M", mother="GM", father="GF"),
+            mouse_row("GRAND", mother="KID1", father="KID2"),
+            mouse_row("OTHER"),
+        ]
+    )
+
+
+def test_progeny_follows_descendants_for_the_chosen_generations():
+    one = logic.progeny_dot(family(), "GM", 1)
+    assert "<B>KID1</B>" in one and "<B>GRAND</B>" not in one and "<B>GF</B>" not in one
+    two = logic.progeny_dot(family(), "GM", 2)
+    assert "<B>GRAND</B>" in two and '"KID1" -> "GRAND"' in two and "<B>OTHER</B>" not in two
+    assert logic.count_descendants(family(), "GM", 2) == 3
+    assert logic.count_descendants(family(), "OTHER", 10) == 0
+
+
+def test_ancestors_go_up_to_ten_generations():
+    rows = [mouse_row("G0")]
+    for depth in range(1, 12):
+        rows.append(mouse_row(f"G{depth}", mother=f"G{depth - 1}"))
+    mice = pd.DataFrame(rows)
+    dot = logic.pedigree_dot(mice, "G11", 10)
+    assert "<B>G1</B>" in dot and "<B>G0</B>" not in dot
+
+
+# ---------- Reports ----------
+
+
+def test_genotype_report_counts_living_mice_by_sex():
+    mice = pd.DataFrame(
+        [
+            mouse_row("A", cre="P", p53="het", brca2="het"),
+            mouse_row("B", sex="M", cre="P", p53="het", brca2="het"),
+            mouse_row("C", cre="N"),
+            mouse_row("D", cre="N", status="Deceased"),
+        ]
+    )
+    report = logic.genotype_report(mice)
+    top = report.iloc[0]
+    assert (top["Cre / p53 / Brca2"], top["Total"], top["F"], top["M"]) == ("P / het / het", 2, 1, 1)
+    assert report["Total"].sum() == 3
+
+
+def test_age_report_bands_every_living_mouse(store):
+    add(store, "A", days=7)
+    add(store, "B", days=70)
+    add(store, "C", days=300)
+    add(store, "D", days=300, status="Deceased")
+    report = logic.age_report(store.snapshot()["mice"], today()).set_index("Age")["Mice"]
+    assert report["Under 4 weeks"] == 1 and report["9 to 16 weeks"] == 1 and report["40 weeks or more"] == 1 and report.sum() == 3
+
+
+def test_pair_report_and_monthly_births(store):
+    pair, _ = colony_with_litter(store)
+    store.transaction("l", lambda tx: ops.add_litter(tx, pair, old(1), 6, ""))
+    row = logic.pair_report(store.snapshot()).iloc[0]
+    assert (row["Litters"], row["Pups"], row["Pups per litter"], row["Days between litters"]) == (2, 10, 5.0, 20)
+    months = logic.births_by_month(store.snapshot()["litters"])
+    assert months["Litters"].sum() == 2 and months["Pups"].sum() == 10
+
+
+def test_pair_with_no_litters_reports_cleanly(store):
+    add(store, "M1", sex="M", days=100)
+    add(store, "F1", sex="F", days=100)
+    store.transaction("p", lambda tx: ops.add_pair(tx, "M1", "F1", "C1", old(5), "", ACTOR))
+    row = logic.pair_report(store.snapshot()).iloc[0]
+    assert row["Litters"] == 0 and row["Pups"] == 0 and pd.isna(row["Pups per litter"])
+
+
+def test_tumor_report_groups_by_genotype_with_median_age(store):
+    add(store, "A", days=100, cre="P", p53="hom", brca2="het")
+    add(store, "B", days=200, cre="P", p53="hom", brca2="het")
+    add(store, "C", days=50, cre="P", p53="hom", brca2="het")
+    add_tumor(store, tag="A", noticed_on=old(30))  # 10 weeks old.
+    add_tumor(store, tag="B", noticed_on=old(60))  # 20 weeks old.
+    add_tumor(store, tag="STRAY")
+    report = logic.tumor_report(store.snapshot()).set_index("Cre / p53 / Brca2")
+    row = report.loc["P / hom / het"]
+    assert (row["Tumor mice"], row["Mice recorded"], row["Median age at tumor (weeks)"]) == (2, 3, 15.0)
+    assert report.loc["Not in Mice list", "Tumor mice"] == 1
+
+
+def test_reports_are_empty_not_broken_with_no_data(store):
+    tables = store.snapshot()
+    assert logic.genotype_report(tables["mice"]).empty and logic.pair_report(tables).empty
+    assert logic.tumor_report(tables).empty and logic.births_by_month(tables["litters"]).empty
+    assert logic.age_report(tables["mice"], today())["Mice"].sum() == 0
+
+
+# ---------- Change history ----------
+
+
+def test_change_history_newest_first_locally(store):
+    add(store, "A1")
+    add(store, "A2")
+    assert [e["message"] for e in store.history()] == ["add A2", "add A1"]
+    assert [e["message"] for e in store.history(1)] == ["add A2"]
+
+
+def test_change_history_from_github(github, remote):
+    add(remote, "A1")
+    add(remote, "A2")
+    entries = remote.history(2)
+    assert [e["message"] for e in entries] == ["add A2", "add A1"]
+    assert entries[0]["when"].endswith("Z")

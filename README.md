@@ -7,7 +7,7 @@ A mouse colony tracker built with Streamlit. Everyone in the lab signs in with o
 | Piece | Where it lives | What it holds |
 |---|---|---|
 | App code | This public repo | No records and no passwords |
-| Colony data | `data` branch of a private repo | `mice.csv`, `pairs.csv`, `litters.csv`, `gels.csv`, `tumors.csv`, `settings.csv`, `gels/` |
+| Colony data | `data` branch of a private repo | `mice.csv`, `pairs.csv`, `litters.csv`, `gels.csv`, `tumors.csv`, `plugs.csv`, `tasks.csv`, `moves.csv`, `settings.csv`, `gels/` |
 | Running app | Streamlit Community Cloud, as a public app | Keeps nothing permanently |
 | Secrets | Streamlit's Secrets box | The shared password and the GitHub token |
 
@@ -41,6 +41,20 @@ On GitHub, go to **Settings > Developer settings > Personal access tokens > Fine
 - Try a wrong password. It should refuse you.
 - Sign in, add a test mouse, and check that `mice.csv` appears on the `data` branch of your private repo.
 - Delete the test mouse.
+
+## What's in the app
+
+- **Dashboard:** Counts, to-do alerts, genotype ratios and cage use
+- **Mice:** Search, filter by genotype, age, sex, status, cohort or cage, plus each mouse's record
+- **Cages:** Cage list, moves with history, printable cage cards
+- **Pairs:** Breeding pairs, litter history, plugs with expected births
+- **Litters:** Litters, pups, genotypes and weaning
+- **Tumors:** Tumor records with breeding status and outcome
+- **Tasks:** Task list and a list of what's coming up by date
+- **Pedigree:** Ancestors or progeny, up to 10 generations
+- **Gels:** PCR gel photos and PDFs
+- **Reports:** Genotype, age, pair productivity, births and tumors
+- **Settings:** Alert thresholds, spreadsheet import, Excel export, change history
 
 ## Day to day
 

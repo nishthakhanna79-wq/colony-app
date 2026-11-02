@@ -4,7 +4,7 @@ import streamlit as st
 
 from colony import auth, ui
 from colony.backends import StoreError
-from colony.views import cages, dashboard, gels, litters, mice, pairs, pedigree, settings, tasks, tumors
+from colony.views import cages, dashboard, gels, litters, mice, pairs, pedigree, reports, settings, tasks, tumors
 
 st.set_page_config(page_title=auth.APP_NAME, layout="wide")
 st.html(
@@ -40,6 +40,7 @@ page = st.navigation(
         st.Page(lambda: tasks.render(ctx), title="Tasks", url_path="tasks"),
         st.Page(lambda: pedigree.render(ctx), title="Pedigree", url_path="pedigree"),
         st.Page(lambda: gels.render(ctx), title="Gels", url_path="gels"),
+        st.Page(lambda: reports.render(ctx), title="Reports", url_path="reports"),
         st.Page(lambda: settings.render(ctx), title="Settings", url_path="settings"),
     ],
     position="top",

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
 from .. import auth, imports, ops, ui
-from ..schema import DEFAULT_SETTINGS, SETTING_LABELS
+from ..backends import StoreError
+from ..schema import DEFAULT_SETTINGS, LAB_TIMEZONE, SETTING_LABELS
 
 
 def _thresholds(ctx: ui.Context, tables) -> None:
@@ -95,13 +98,31 @@ def _export(tables) -> None:
     )
 
 
+def _history(ctx: ui.Context) -> None:
+    st.caption("The latest saves, newest first. With one shared login, this shows what changed and when, but not who.")
+    try:
+        entries = ctx.store.history(50)
+    except StoreError as exc:
+        st.error(str(exc))
+        return
+    if not entries:
+        st.info("No changes yet.")
+        return
+    rows = []
+    for entry in entries:
+        when = datetime.fromisoformat(entry["when"].replace("Z", "+00:00")).astimezone(LAB_TIMEZONE)
+        message = entry["message"].splitlines()[0].removesuffix(f" [{auth.SHARED_USER}]")
+        rows.append({"When": when.strftime("%Y-%m-%d %H:%M"), "What changed": message})
+    ui.table(pd.DataFrame(rows))
+
+
 def render(ctx: ui.Context) -> None:
     tables = ctx.store.snapshot()
     st.title("Settings")
     ui.show_flash()
     mode = st.segmented_control(
         "View",
-        ["Alerts", "Import", "Export"],
+        ["Alerts", "Import", "Export", "History"],
         default="Alerts",
         label_visibility="collapsed",
         key="settings_mode",
@@ -110,6 +131,8 @@ def render(ctx: ui.Context) -> None:
         _import(ctx, tables)
     elif mode == "Export":
         _export(tables)
+    elif mode == "History":
+        _history(ctx)
     else:
         _thresholds(ctx, tables)
 

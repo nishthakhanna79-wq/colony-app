@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote
@@ -32,6 +33,8 @@ class Backend(Protocol):
     def read(self, path: str, ref: str) -> bytes | None: ...
 
     def commit(self, parent: str | None, files: dict[str, bytes], message: str) -> str: ...
+
+    def history(self, limit: int) -> list[dict[str, str]]: ...
 
 
 class LocalBackend:
@@ -63,8 +66,16 @@ class LocalBackend:
             new_head = uuid.uuid4().hex
             self._head_file.write_text(new_head)
             with (self.root / ".history").open("a") as history:
-                history.write(json.dumps({"head": new_head, "message": message}) + "\n")
+                when = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                history.write(json.dumps({"head": new_head, "message": message, "when": when}) + "\n")
             return new_head
+
+    def history(self, limit: int) -> list[dict[str, str]]:
+        path = self.root / ".history"
+        if not path.exists():
+            return []
+        entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        return [{"when": e["when"], "message": e["message"]} for e in reversed(entries)][:limit]
 
 
 class GitHubBackend:
@@ -144,6 +155,14 @@ class GitHubBackend:
         if not response.ok:
             raise self._fail(response, f"read {path}")
         return response.content
+
+    def history(self, limit: int) -> list[dict[str, str]]:
+        response = self._request("GET", "/commits", params={"sha": self.branch, "per_page": limit})
+        commits = self._json(response, "read the change history")
+        return [
+            {"when": item["commit"]["committer"]["date"], "message": item["commit"]["message"]}
+            for item in commits
+        ]
 
     def _initialize(self) -> str:
         """Blob and tree calls fail on an empty repo, so make the first commit by hand."""

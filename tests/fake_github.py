@@ -98,6 +98,16 @@ class FakeGitHub:
                 return jsonify(message="Not Found"), 404
             return jsonify(sha=sha, tree={"sha": commit["tree"]})
 
+        @app.get(f"{prefix}/commits")
+        def list_commits():
+            items = []
+            sha = self.ref
+            while sha and len(items) < int(request.args.get("per_page", 30)):
+                commit = self.commits[sha]
+                items.append({"sha": sha, "commit": {"message": commit["message"], "committer": {"date": "2026-11-02T22:05:00Z"}}})
+                sha = commit["parents"][0] if commit["parents"] else None
+            return jsonify(items)
+
         @app.post(f"{prefix}/git/blobs")
         def post_blob():
             if self.ref is None:

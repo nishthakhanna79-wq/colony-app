@@ -34,9 +34,21 @@ def render(ctx: ui.Context) -> None:
         placeholder="Type an ear tag",
         key="pedigree_mouse",
     )
-    generations = st.segmented_control("Generations back", [1, 2, 3], default=2, key="pedigree_generations") or 2
+    first, second = st.columns(2)
+    with first:
+        view = st.segmented_control("Show", ["Ancestors", "Progeny"], default="Ancestors", key="pedigree_view") or "Ancestors"
+    with second:
+        generations = st.selectbox("Generations", list(range(1, 11)), index=1, key="pedigree_generations")
     _legend()
     if tag:
+        if view == "Progeny":
+            count = logic.count_descendants(mice, tag, generations)
+            if count:
+                st.caption(f"{count} descendant{'s' if count != 1 else ''} in {generations} generation{'s' if generations != 1 else ''}.")
+                st.graphviz_chart(logic.progeny_dot(mice, tag, generations), width="stretch")
+            else:
+                st.info(f"{tag} has no recorded offspring.")
+            return
         st.graphviz_chart(logic.pedigree_dot(mice, tag, generations), width="stretch")
         problems = logic.inheritance_problems(mice)
         mine = problems[problems["Ear tag"] == tag]

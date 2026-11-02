@@ -27,6 +27,10 @@ ALLELE_COLORS = {
 }
 
 
+def _day_count(days: int) -> str:
+    return f"{days} day" if days == 1 else f"{days} days"
+
+
 def genotype_label(row) -> str:
     return " / ".join(str(row[locus]) for locus in LOCI)
 
@@ -199,7 +203,7 @@ def plug_table(tables: Tables, settings: dict[str, int], today: date) -> pd.Data
             status = "No litter recorded"
         else:
             is_open = True
-            status = f"Due in {days} days" if days > 0 else ("Due today" if days == 0 else f"{-days} days overdue")
+            status = f"Due in {_day_count(days)}" if days > 0 else ("Due today" if days == 0 else f"{_day_count(-days)} overdue")
         rows.append(
             {
                 "Plug": plug["plug_id"],
@@ -241,7 +245,7 @@ def breeders_to_replace(tables: Tables, settings: dict[str, int], today: date) -
 def _when(days: int) -> str:
     if days == 0:
         return "Today"
-    return f"In {days} days" if days > 0 else f"{-days} days overdue"
+    return f"In {_day_count(days)}" if days > 0 else f"{_day_count(-days)} overdue"
 
 
 def open_tasks(tables: Tables, today: date) -> pd.DataFrame:
@@ -329,7 +333,7 @@ def build_alerts(tables: Tables, settings: dict[str, int], today: date) -> Alert
                     "Pair": litter["pair_id"],
                     "Born": litter["dob"],
                     "Wean by": due.isoformat(),
-                    "When": f"{-days} days overdue" if days < 0 else ("Today" if days == 0 else f"In {days} days"),
+                    "When": _when(days),
                     "_days": days,
                 }
             )
@@ -353,7 +357,7 @@ def build_alerts(tables: Tables, settings: dict[str, int], today: date) -> Alert
                     "Genotype": genotype_label(mouse),
                     "Cage": mouse["cage"],
                     "Age (days)": age,
-                    "When": f"In {left} days" if left > 0 else "Reached",
+                    "When": f"In {_day_count(left)}" if left > 0 else "Reached",
                 }
             )
         if mouse["genotyping_status"] == "Pending" and age > settings["genotyping_pending_days"]:
@@ -515,3 +519,135 @@ def pedigree_dot(mice: pd.DataFrame, ear_tag: str, generations: int) -> str:
 
     visit(ear_tag, 0)
     return "\n".join(lines + edges + ["}"])
+
+
+def progeny_dot(mice: pd.DataFrame, ear_tag: str, generations: int) -> str:
+    """Graphviz source for a mouse and its descendants, oldest generation on the left."""
+    children: dict[str, list[str]] = {}
+    for _, mouse in mice.iterrows():
+        for parent in (mouse["mother"], mouse["father"]):
+            if parent:
+                children.setdefault(parent, []).append(mouse["ear_tag"])
+    by_tag = {row["ear_tag"]: row for _, row in mice.iterrows()}
+    flagged = set(inheritance_problems(mice)["Ear tag"])
+    lines = [
+        "digraph progeny {",
+        'rankdir=LR; bgcolor="transparent"; nodesep=0.25; ranksep=0.5;',
+        'edge [color="#6F6D62", arrowsize=0.6];',
+    ]
+    seen = {ear_tag}
+    lines.append(_pedigree_node(ear_tag, by_tag[ear_tag], flagged, True))
+    edges: list[str] = []
+    level = [ear_tag]
+    for _ in range(generations):
+        following = []
+        for parent in level:
+            for child in children.get(parent, []):
+                edges.append(f'"{parent}" -> "{child}";')
+                if child not in seen:
+                    seen.add(child)
+                    lines.append(_pedigree_node(child, by_tag[child], flagged, False))
+                    following.append(child)
+        level = following
+    return "\n".join(lines + edges + ["}"])
+
+
+def count_descendants(mice: pd.DataFrame, ear_tag: str, generations: int) -> int:
+    return progeny_dot(mice, ear_tag, generations).count("<TABLE") - 1
+
+
+def genotype_report(mice: pd.DataFrame) -> pd.DataFrame:
+    """Living mice by genotype and sex, most common first."""
+    living = mice[~mice["status"].isin(ALIVE_EXCLUDED)]
+    rows = []
+    if len(living):
+        labelled = living.assign(_genotype=living.apply(genotype_label, axis=1))
+        for genotype, group in labelled.groupby("_genotype"):
+            rows.append(
+                {
+                    "Cre / p53 / Brca2": genotype,
+                    "Total": len(group),
+                    "F": int((group["sex"] == "F").sum()),
+                    "M": int((group["sex"] == "M").sum()),
+                }
+            )
+    frame = pd.DataFrame(rows, columns=["Cre / p53 / Brca2", "Total", "F", "M"])
+    return frame.sort_values("Total", ascending=False).reset_index(drop=True)
+
+
+AGE_BANDS = [(0, 3, "Under 4 weeks"), (4, 8, "4 to 8 weeks"), (9, 16, "9 to 16 weeks"), (17, 26, "17 to 26 weeks"), (27, 39, "27 to 39 weeks"), (40, 10_000, "40 weeks or more")]
+
+
+def age_report(mice: pd.DataFrame, today: date) -> pd.DataFrame:
+    """Living mice by age band."""
+    living = mice[~mice["status"].isin(ALIVE_EXCLUDED)]
+    weeks = [age // 7 for age in (age_days(dob, today) for dob in living["dob"]) if age is not None]
+    rows = [{"Age": label, "Mice": sum(1 for w in weeks if low <= w <= high)} for low, high, label in AGE_BANDS]
+    return pd.DataFrame(rows)
+
+
+def pair_report(tables: Tables) -> pd.DataFrame:
+    """Productivity of each pair, most pups first."""
+    rows = []
+    for _, pair in tables["pairs"].iterrows():
+        litters = tables["litters"][tables["litters"]["pair_id"] == pair["pair_id"]]
+        pups = [int(n) for n in litters["n_pups"] if str(n).isdigit()]
+        dates = sorted(d for d in (parse_iso(v) for v in litters["dob"]) if d)
+        gaps = [(later - earlier).days for earlier, later in zip(dates, dates[1:])]
+        rows.append(
+            {
+                "Pair": pair["pair_id"],
+                "Status": pair["status"],
+                "Litters": len(litters),
+                "Pups": sum(pups),
+                "Pups per litter": round(sum(pups) / len(pups), 1) if pups else None,
+                "Days between litters": round(sum(gaps) / len(gaps)) if gaps else None,
+            }
+        )
+    columns = ["Pair", "Status", "Litters", "Pups", "Pups per litter", "Days between litters"]
+    return pd.DataFrame(rows, columns=columns).sort_values("Pups", ascending=False).reset_index(drop=True)
+
+
+def births_by_month(litters: pd.DataFrame) -> pd.DataFrame:
+    """Litters and pups per month, newest first."""
+    months: dict[str, dict[str, int]] = {}
+    for _, litter in litters.iterrows():
+        born = parse_iso(litter["dob"])
+        if born is None:
+            continue
+        month = months.setdefault(born.strftime("%Y-%m"), {"Litters": 0, "Pups": 0})
+        month["Litters"] += 1
+        month["Pups"] += int(litter["n_pups"]) if str(litter["n_pups"]).isdigit() else 0
+    rows = [{"Month": month, **counts} for month, counts in sorted(months.items(), reverse=True)]
+    return pd.DataFrame(rows, columns=["Month", "Litters", "Pups"])
+
+
+def tumor_report(tables: Tables) -> pd.DataFrame:
+    """Tumor counts by genotype, with the age tumors were noticed. Uses every recorded mouse."""
+    mice = tables["mice"]
+    by_tag = {row["ear_tag"]: row for _, row in mice.iterrows()}
+    totals: dict[str, int] = {}
+    for _, mouse in mice.iterrows():
+        label = genotype_label(mouse)
+        totals[label] = totals.get(label, 0) + 1
+    groups: dict[str, list[int | None]] = {}
+    for _, tumor in tables["tumors"].iterrows():
+        mouse = by_tag.get(tumor["ear_tag"])
+        label = genotype_label(mouse) if mouse is not None else "Not in Mice list"
+        noticed = parse_iso(tumor["noticed_on"])
+        age = age_days(mouse["dob"], noticed) if mouse is not None and noticed else None
+        groups.setdefault(label, []).append(None if age is None else age // 7)
+    rows = []
+    for label, ages in groups.items():
+        known = sorted(age for age in ages if age is not None)
+        middle = known[len(known) // 2] if len(known) % 2 else (known[len(known) // 2 - 1] + known[len(known) // 2]) / 2 if known else None
+        rows.append(
+            {
+                "Cre / p53 / Brca2": label,
+                "Tumor mice": len(ages),
+                "Mice recorded": totals.get(label),
+                "Median age at tumor (weeks)": middle,
+            }
+        )
+    columns = ["Cre / p53 / Brca2", "Tumor mice", "Mice recorded", "Median age at tumor (weeks)"]
+    return pd.DataFrame(rows, columns=columns).sort_values("Tumor mice", ascending=False).reset_index(drop=True)
