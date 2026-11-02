@@ -243,6 +243,32 @@ def cage_census(mice: pd.DataFrame, capacity: int) -> pd.DataFrame:
     return counts.sort_values("Cage").reset_index(drop=True)
 
 
+def tumor_table(tables: Tables) -> pd.DataFrame:
+    """Tumor records, newest first, with genotype and age filled in when the mouse is known."""
+    # The answers people look for come first, so they show on a phone without scrolling sideways.
+    columns = ["Ear tag", "In breeding", "Outcome", "Outcome date", "Noticed", "Age (weeks)", "Cre / p53 / Brca2", "Notes"]
+    by_tag = {row["ear_tag"]: row for _, row in tables["mice"].iterrows()}
+    rows = []
+    for _, tumor in tables["tumors"].iterrows():
+        mouse = by_tag.get(tumor["ear_tag"])
+        noticed = parse_iso(tumor["noticed_on"])
+        age = age_days(mouse["dob"], noticed) if mouse is not None and noticed else None
+        rows.append(
+            {
+                "Ear tag": tumor["ear_tag"],
+                "Cre / p53 / Brca2": genotype_label(mouse) if mouse is not None else "Not in Mice list",
+                "Noticed": tumor["noticed_on"],
+                "Age (weeks)": "" if age is None else str(age // 7),
+                "In breeding": tumor["in_breeding"],
+                "Outcome": tumor["outcome"],
+                "Outcome date": tumor["outcome_date"],
+                "Notes": tumor["notes"],
+            }
+        )
+    frame = pd.DataFrame(rows, columns=columns)
+    return frame.sort_values("Noticed", ascending=False).reset_index(drop=True)
+
+
 def litter_breakdown(mice: pd.DataFrame, litter_id: str) -> dict:
     pups = mice[mice["litter_id"] == litter_id]
     genotypes = pups.apply(genotype_label, axis=1).value_counts().to_dict() if len(pups) else {}

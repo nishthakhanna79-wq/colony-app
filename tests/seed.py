@@ -66,6 +66,10 @@ def main(folder):
     store.transaction("gel", lambda tx: ops.add_gel(tx, "gel.jpg", gel_photo(), ["2001", "2002", "2003"], ago(60), "Cre", "Cre F/R", "450 bp expected, seen in lanes 1 and 3", "Pass", "", ACTOR))
     store.transaction("gel", lambda tx: ops.add_gel(tx, "gel.pdf", b"%PDF-1.4 test", ["1005"], ago(50), "Brca2", "B2 11F + B2 11R", "Faint lower band", "Ambiguous", "Rerun", ACTOR))
 
+    store.transaction("tumor", lambda tx: ops.add_tumor(tx, dict(ear_tag="1005", noticed_on=ago(20), in_breeding="No", outcome="Alive", notes="Left flank"), ACTOR))
+    store.transaction("tumor", lambda tx: ops.add_tumor(tx, dict(ear_tag="1007", noticed_on=ago(60), in_breeding="Yes", outcome="Collected", outcome_date=ago(40)), ACTOR))
+    store.transaction("tumor", lambda tx: ops.add_tumor(tx, dict(ear_tag="OLD-77", noticed_on=ago(100), in_breeding="No", outcome="Deceased", outcome_date=ago(80)), ACTOR))
+
 
 if __name__ == "__main__":
     main(sys.argv[1])

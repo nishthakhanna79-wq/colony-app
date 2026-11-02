@@ -7,7 +7,7 @@ A mouse colony tracker built with Streamlit. Everyone in the lab signs in with o
 | Piece | Where it lives | What it holds |
 |---|---|---|
 | App code | This public repo | No records and no passwords |
-| Colony data | `data` branch of a private repo | `mice.csv`, `pairs.csv`, `litters.csv`, `gels.csv`, `settings.csv`, `gels/` |
+| Colony data | `data` branch of a private repo | `mice.csv`, `pairs.csv`, `litters.csv`, `gels.csv`, `tumors.csv`, `settings.csv`, `gels/` |
 | Running app | Streamlit Community Cloud, as a public app | Keeps nothing permanently |
 | Secrets | Streamlit's Secrets box | The shared password and the GitHub token |
 

@@ -26,6 +26,8 @@ PAIR_STATUSES = ["Active", "Retired"]
 LITTER_STATUSES = ["Pending genotyping", "Weaned", "Pups assigned"]
 GEL_RESULTS = ["Pass", "Fail", "Ambiguous"]
 GEL_LOCI = ["Cre", "p53", "Brca2", "Other"]
+BREEDING_CHOICES = ["Yes", "No"]
+TUMOR_OUTCOMES = ["Alive", "Deceased", "Collected"]
 
 TABLE_COLUMNS: dict[str, list[str]] = {
     "mice": [
@@ -70,6 +72,16 @@ TABLE_COLUMNS: dict[str, list[str]] = {
         "uploaded_by",
         "uploaded_at",
         "notes",
+    ],
+    "tumors": [
+        "ear_tag",
+        "noticed_on",
+        "in_breeding",
+        "outcome",
+        "outcome_date",
+        "notes",
+        "updated_by",
+        "updated_at",
     ],
     "settings": ["key", "value"],
 }

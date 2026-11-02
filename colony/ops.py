@@ -10,6 +10,7 @@ import pandas as pd
 from PIL import Image, ImageOps
 
 from .schema import (
+    BREEDING_CHOICES,
     CRE_VALUES,
     DEFAULT_SETTINGS,
     FLOX_VALUES,
@@ -23,6 +24,7 @@ from .schema import (
     MOUSE_STATUSES,
     PENDING,
     SEXES,
+    TUMOR_OUTCOMES,
     now_iso,
     today,
 )
@@ -186,6 +188,7 @@ def _rename_references(tables: Tables, old: str, new: str) -> None:
     tables["gels"]["mice"] = tables["gels"]["mice"].map(
         lambda linked: ";".join(new if tag == old else tag for tag in linked.split(";") if tag)
     ).astype(str)
+    tables["tumors"].loc[tables["tumors"]["ear_tag"] == old, "ear_tag"] = new
 
 
 def mouse_references(tables: Tables, ear_tag: str) -> list[str]:
@@ -198,6 +201,8 @@ def mouse_references(tables: Tables, ear_tag: str) -> list[str]:
         found.append("a breeding pair")
     if tables["gels"]["mice"].map(lambda linked: ear_tag in linked.split(";")).any():
         found.append("a gel record")
+    if (tables["tumors"]["ear_tag"] == ear_tag).any():
+        found.append("a tumor record")
     return found
 
 
@@ -425,6 +430,77 @@ def add_gel(
     return gel_id
 
 
+def _clean_tumor(tables: Tables, ear_tag: str, data: dict, actor: str) -> dict[str, str]:
+    in_breeding = data.get("in_breeding")
+    if in_breeding not in BREEDING_CHOICES:
+        raise ValidationError("Choose whether this mouse is in breeding.")
+    outcome = _choice(data.get("outcome"), TUMOR_OUTCOMES, "Outcome")
+    noticed = clean_date(data.get("noticed_on"), "Date tumor noticed")
+    outcome_date = clean_date(data.get("outcome_date"), "Date deceased or collected", required=False)
+    if outcome == "Alive" and outcome_date:
+        raise ValidationError("Choose Deceased or Collected, or clear the date.")
+    if outcome != "Alive" and not outcome_date:
+        raise ValidationError(f"Add the date this mouse was {outcome.lower()}.")
+    if outcome_date and outcome_date < noticed:
+        raise ValidationError("The date deceased or collected can't be before the tumor was noticed.")
+    mice = tables["mice"]
+    match = mice[mice["ear_tag"] == ear_tag]
+    if len(match) and match.iloc[0]["dob"] and noticed < match.iloc[0]["dob"]:
+        raise ValidationError(f"The tumor can't be noticed before {ear_tag} was born.")
+    return {
+        "ear_tag": ear_tag,
+        "noticed_on": noticed,
+        "in_breeding": str(in_breeding),
+        "outcome": outcome,
+        "outcome_date": outcome_date,
+        "notes": clean_text(data.get("notes")),
+        "updated_by": actor,
+        "updated_at": now_iso(),
+    }
+
+
+def _mark_deceased_if_gone(tables: Tables, row: dict[str, str], actor: str) -> None:
+    if row["outcome"] == "Alive":
+        return
+    mice = tables["mice"]
+    is_mouse = mice["ear_tag"] == row["ear_tag"]
+    mice.loc[is_mouse, "status"] = "Deceased"
+    mice.loc[is_mouse, "updated_by"] = actor
+    mice.loc[is_mouse, "updated_at"] = now_iso()
+
+
+def add_tumor(tx: Transaction, data: dict, actor: str) -> str:
+    """Record a tumor. The ear tag doesn't have to be in the Mice list yet."""
+    tables = tx.tables
+    tag = clean_ear_tag(data.get("ear_tag"))
+    known = tables["mice"]["ear_tag"]
+    same_mouse = known[known.str.lower() == tag.lower()]
+    if len(same_mouse):
+        tag = same_mouse.iloc[0]
+    if tag.lower() in set(tables["tumors"]["ear_tag"].str.lower()):
+        raise ValidationError(f"{tag} already has a tumor record. Update it from the list.")
+    row = _clean_tumor(tables, tag, data, actor)
+    tables["tumors"] = _append(tables["tumors"], row)
+    _mark_deceased_if_gone(tables, row, actor)
+    return tag
+
+
+def update_tumor(tx: Transaction, ear_tag: str, data: dict, actor: str) -> None:
+    tables = tx.tables
+    tumors = tables["tumors"]
+    index = _row_index(tumors, "ear_tag", ear_tag, "Tumor record")
+    row = _clean_tumor(tables, ear_tag, data, actor)
+    for column, value in row.items():
+        tumors.loc[index, column] = value
+    _mark_deceased_if_gone(tables, row, actor)
+
+
+def delete_tumor(tx: Transaction, ear_tag: str) -> None:
+    tumors = tx.tables["tumors"]
+    index = _row_index(tumors, "ear_tag", ear_tag, "Tumor record")
+    tx.tables["tumors"] = tumors.drop(index=index).reset_index(drop=True)
+
+
 def get_settings(tables: Tables) -> dict[str, int]:
     stored = dict(zip(tables["settings"]["key"], tables["settings"]["value"]))
     settings = {}
@@ -455,7 +531,9 @@ __all__ = [
     "add_mouse",
     "add_pair",
     "add_pups",
+    "add_tumor",
     "delete_mouse",
+    "delete_tumor",
     "get_settings",
     "mouse_references",
     "prepare_gel_file",
@@ -464,4 +542,5 @@ __all__ = [
     "save_settings",
     "update_litter",
     "update_mouse",
+    "update_tumor",
 ]

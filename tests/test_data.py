@@ -405,3 +405,91 @@ def test_typing_an_allele_in_the_grid_matches_only_that_allele():
     for options in (CRE_VALUES, FLOX_VALUES):
         for value in options:
             assert [o for o in options if value.lower() in o.lower()] == [value]
+
+
+# ---------- Tumors ----------
+
+
+def tumor(tag="1", **extra):
+    return {"ear_tag": tag, "noticed_on": old(5), "in_breeding": "No", "outcome": "Alive", **extra}
+
+
+def add_tumor(store, **kwargs):
+    return store.transaction("t", lambda tx: ops.add_tumor(tx, tumor(**kwargs), ACTOR))
+
+
+def test_tumor_can_be_logged_with_just_an_ear_tag_not_in_the_mice_list(store):
+    assert add_tumor(store, tag="NEW1") == "NEW1"
+    row = logic.tumor_table(store.snapshot()).iloc[0]
+    assert row["Ear tag"] == "NEW1" and row["Cre / p53 / Brca2"] == "Not in Mice list" and row["Age (weeks)"] == ""
+
+
+def test_tumor_links_to_a_known_mouse_regardless_of_case(store):
+    add(store, "aB1", days=70, cre="P", p53="hom", brca2="het")
+    assert add_tumor(store, tag="AB1") == "aB1"
+    row = logic.tumor_table(store.snapshot()).iloc[0]
+    assert row["Cre / p53 / Brca2"] == "P / hom / het" and row["Age (weeks)"] == "9"
+
+
+def test_a_mouse_only_gets_one_tumor_record(store):
+    add_tumor(store, tag="A1")
+    with pytest.raises(ValidationError, match="already has"):
+        add_tumor(store, tag="a1")
+
+
+def test_breeding_answer_is_required(store):
+    with pytest.raises(ValidationError, match="in breeding"):
+        add_tumor(store, in_breeding=None)
+
+
+@pytest.mark.parametrize("outcome", ["Deceased", "Collected"])
+def test_ending_needs_a_date_and_marks_the_mouse_deceased(store, outcome):
+    add(store, "A1", days=100, status="Experimental")
+    with pytest.raises(ValidationError, match="Add the date"):
+        add_tumor(store, tag="A1", outcome=outcome)
+    assert store.snapshot()["mice"].iloc[0]["status"] == "Experimental"
+    add_tumor(store, tag="A1", outcome=outcome, outcome_date=old(1))
+    assert store.snapshot()["mice"].iloc[0]["status"] == "Deceased"
+
+
+def test_alive_with_a_date_is_refused(store):
+    with pytest.raises(ValidationError, match="clear the date"):
+        add_tumor(store, outcome_date=old(1))
+
+
+def test_dates_must_make_sense(store):
+    add(store, "A1", days=30)
+    with pytest.raises(ValidationError, match="before the tumor"):
+        add_tumor(store, tag="B1", outcome="Collected", outcome_date=old(9))
+    with pytest.raises(ValidationError, match="before A1 was born"):
+        add_tumor(store, tag="A1", noticed_on=old(40))
+    with pytest.raises(ValidationError, match="future"):
+        add_tumor(store, noticed_on=(today() + timedelta(days=1)).isoformat())
+
+
+def test_tumor_update_records_collection_later(store):
+    add(store, "A1", days=100)
+    add_tumor(store, tag="A1")
+    change = tumor(tag="A1", outcome="Collected", outcome_date=old(0), in_breeding="Yes")
+    store.transaction("u", lambda tx: ops.update_tumor(tx, "A1", change, ACTOR))
+    tables = store.snapshot()
+    record = tables["tumors"].iloc[0]
+    assert (record["outcome"], record["outcome_date"], record["in_breeding"]) == ("Collected", old(0), "Yes")
+    assert tables["mice"].iloc[0]["status"] == "Deceased"
+
+
+def test_tumor_record_follows_a_renamed_mouse_and_blocks_deleting_it(store):
+    add(store, "A1", days=100)
+    add_tumor(store, tag="A1")
+    with pytest.raises(ValidationError, match="tumor record"):
+        store.transaction("d", lambda tx: ops.delete_mouse(tx, "A1"))
+    store.transaction("r", lambda tx: ops.update_mouse(tx, "A1", {"ear_tag": "A2"}, ACTOR))
+    assert list(store.snapshot()["tumors"]["ear_tag"]) == ["A2"]
+
+
+def test_deleting_a_tumor_record_leaves_the_mouse_alone(store):
+    add(store, "A1", days=100)
+    add_tumor(store, tag="A1")
+    store.transaction("d", lambda tx: ops.delete_tumor(tx, "A1"))
+    tables = store.snapshot()
+    assert tables["tumors"].empty and list(tables["mice"]["ear_tag"]) == ["A1"]

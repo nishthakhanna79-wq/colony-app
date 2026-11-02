@@ -85,6 +85,11 @@ def _detail(ctx: ui.Context, tables: Tables, tag: str) -> None:
         "Mother": mouse["mother"] or "Not recorded",
         "Father": mouse["father"] or "Not recorded",
     }
+    tumor = tables["tumors"][tables["tumors"]["ear_tag"] == tag]
+    if len(tumor):
+        record = tumor.iloc[0]
+        ending = f", {record['outcome_date']}" if record["outcome_date"] else ""
+        facts["Tumor"] = f"noticed {record['noticed_on']}, {record['outcome']}{ending}"
     st.text("\n".join(f"{label}: {value}" for label, value in facts.items()))
     if mouse["notes"]:
         st.text(f"Notes: {mouse['notes']}")
