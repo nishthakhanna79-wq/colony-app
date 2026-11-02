@@ -112,6 +112,17 @@ def test_unreadable_csv_is_never_saved_over(github, remote):
     assert github.files_at_head()["mice.csv"] == broken
 
 
+def test_store_loaded_before_a_table_existed_picks_it_up_without_waiting(tmp_path):
+    # What a running app holds after a code update adds a table.
+    store = Store(LocalBackend(tmp_path), refresh_seconds=3600)
+    add(store, "A1")
+    store.snapshot()
+    del store._tables["tumors"]
+    tables = store.snapshot()
+    assert tables["tumors"].empty
+    assert list(tables["mice"]["ear_tag"]) == ["A1"]
+
+
 # ---------- Mice ----------
 
 

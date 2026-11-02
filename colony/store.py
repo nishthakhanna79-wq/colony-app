@@ -74,11 +74,13 @@ class Store:
 
     def refresh(self, force: bool = False) -> None:
         stale = time.monotonic() - self._checked_at >= self.refresh_seconds
-        if not force and self._tables is not None and not stale:
+        # Tables missing from memory mean a code update added one since these were loaded.
+        missing = self._tables is not None and bool(set(TABLE_COLUMNS) - set(self._tables))
+        if not force and self._tables is not None and not stale and not missing:
             return
         with self._write_lock:
             head = self.backend.head()
-            if self._tables is None or head != self._head:
+            if self._tables is None or head != self._head or missing:
                 self._load(head)
             self._checked_at = time.monotonic()
 

@@ -20,6 +20,7 @@ from .schema import (
     MOUSE_STATUSES,
     PENDING,
     SEXES,
+    TABLE_COLUMNS,
     today,
 )
 from .store import Store, Tables, Transaction
@@ -34,8 +35,14 @@ class Context:
     user: str
 
 
-@st.cache_resource(show_spinner=False)
 def get_store() -> Store:
+    # The running app keeps this cached through code updates. Keying it on the table layout
+    # means an update that changes the tables gets a new store, not one from before the change.
+    return _cached_store(repr(TABLE_COLUMNS))
+
+
+@st.cache_resource(show_spinner=False)
+def _cached_store(table_layout: str) -> Store:
     github = auth.secret_section("github")
     if github is not None:
         backend = GitHubBackend(
